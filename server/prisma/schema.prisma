@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  LAB_INCHARGE
+  STUDENT
+}
+
+enum AlertType {
+  UNAUTHORIZED_ACCESS
+  LOW_STOCK
+  NOT_RETURNED
+  LEAKAGE
+  ANOMALY
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  DANGER
+}
+
+enum TransactionStatus {
+  ACTIVE       // chemical taken, not yet returned
+  RETURNED     // returned on time
+  OVERDUE      // not returned within allowed time
+}
+
+enum Lab {
+  LAB_A
+  LAB_B
+}
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+// System administrators — full access, manage everything
+
+model Admin {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  isActive  Boolean  @default(true)
+  lastLogin DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resolvedAlerts Alert[] @relation("ResolvedBy")
+}
+
+// ─── LabIncharge ──────────────────────────────────────────────────────────────
+// Lab staff who physically operate the RFID scanner and manage daily operations
+
+model LabIncharge {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  password     String
+  employeeId   String?  @unique
+  department   String?
+  phone        String?
+  isActive     Boolean  @default(true)
+  lastLogin    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lab          Lab?
+
+  transactions Transaction[]  // transactions they processed
+
+  @@index([email])
+}
+
+// ─── Student ──────────────────────────────────────────────────────────────────
+// Students who come to collect chemicals for experiments
+
+model Student {
+  id           String   @id @default(cuid())
+  name         String
+  rollNo       String   @unique   // e.g. "21-CS-45"
+  email        String?  @unique
+  password     String
+  batch        String             // e.g. "2021-2025"
+  department   String             // e.g. "Computer Science"
+  phone        String?
+  rfidTag      String?  @unique   // RFID card UID assigned to student
+  isActive     Boolean  @default(true)
+  lastLogin    DateTime?
+  lastRfidScan DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@index([rfidTag])
+  @@index([rollNo])
+  @@index([department, batch])
+}
+
+// ─── Bottle (Chemical Container) ─────────────────────────────────────────────
+// Each physical chemical bottle in the lab with its RFID tag
+
+model Bottle {
+  id             String   @id @default(cuid())
+  rfidTag        String   @unique   // RFID tag attached to bottle
+  chemicalName   String
+  description    String?
+  unit           String   @default("ml")   // ml, g, L, kg
+  initialQty     Float    // original full quantity
+  currentQty     Float    // current remaining quantity
+  lowStockPct    Int      @default(20)   // alert when below this %
+  location       String?  // shelf/cabinet location in lab
+  supplier       String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  transactions   Transaction[]
+
+  @@index([rfidTag])
+  @@index([isActive])
+}
+
+// ─── Transaction ──────────────────────────────────────────────────────────────
+// Every chemical usage event: student takes and returns a bottle
+
+model Transaction {
+  id              String            @id @default(cuid())
+  studentId       String
+  bottleId        String?           // chemical bottle (null for Lab B attendance logs)
+  labInchargeId   String            // who processed this transaction
+  initialWeight   Float             // weight when taken (from load cell)
+  finalWeight     Float?            // weight when returned (from load cell)
+  quantityUsed    Float?            // calculated: initialWeight - finalWeight
+  timeTaken       DateTime          @default(now())
+  timeReturned    DateTime?
+  status          TransactionStatus @default(ACTIVE)
+  notes           String?
+  purpose         String?           // reason for chemical use (experiment name)
+  lab             Lab?              // which lab this transaction was performed in (from scanning device)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  student         Student     @relation(fields: [studentId],     references: [id])
+  bottle          Bottle?     @relation(fields: [bottleId],      references: [id])
+  labIncharge     LabIncharge @relation(fields: [labInchargeId], references: [id])
+
+  @@index([studentId])
+  @@index([bottleId])
+  @@index([labInchargeId])
+  @@index([timeTaken])
+  @@index([status])
+  @@index([lab])
+}
+
+// ─── Alert ────────────────────────────────────────────────────────────────────
+
+model Alert {
+  id          String        @id @default(cuid())
+  type        AlertType
+  severity    AlertSeverity @default(WARNING)
+  message     String
+  studentId   String?       // student involved (if applicable)
+  bottleId    String?       // bottle involved (if applicable)
+  isResolved  Boolean       @default(false)
+  resolvedAt  DateTime?
+  resolvedBy  String?       // Admin id who resolved
+  createdAt   DateTime      @default(now())
+
+  admin       Admin?        @relation("ResolvedBy", fields: [resolvedBy], references: [id])
+
+  @@index([isResolved])
+  @@index([createdAt])
+  @@index([type])
+}
+
+// ─── Setting ──────────────────────────────────────────────────────────────────
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  email     String
+  code      String
+  userType  String   // 'STUDENT' | 'LAB_INCHARGE'
+  userId    String
+  used      Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([code])
+}

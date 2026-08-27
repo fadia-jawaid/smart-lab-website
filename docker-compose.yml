@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       smart_lab
+      POSTGRES_USER:     lab_user
+      POSTGRES_PASSWORD: Lab@1234
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab_user -d smart_lab"]
+      interval: 10s
+      retries: 5
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+
+  server:
+    build: ./server
+    ports:
+      - "5000:5000"
+    env_file: ./server/.env
+    environment:
+      DATABASE_URL: postgresql://lab_user:Lab@1234@db:5432/smart_lab
+      MQTT_BROKER:  mqtt://mqtt:1883
+      CLIENT_URL:   http://localhost
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+
+  client:
+    build: ./client
+    ports:
+      - "80:80"
+    depends_on:
+      - server
