@@ -190,7 +190,7 @@ router.get('/export', authenticate, async (req, res) => {
 
     const headers = [
       'Student Name', 'Roll No', 'Department', 'Batch',
-      'Chemical', 'Unit', 'Quantity Used',
+      'Chemical', 'Unit', 'Initial Weight', 'Final Weight', 'Quantity Used',
       'Lab',
       'Time Taken', 'Time Returned', 'Duration (min)',
       'Purpose', 'Status', 'Processed By',
@@ -208,6 +208,8 @@ router.get('/export', authenticate, async (req, res) => {
         tx.student?.batch      ?? '',
         tx.bottle?.chemicalName ?? '',
         tx.bottle?.unit        ?? '',
+        tx.initialWeight       != null ? tx.initialWeight.toFixed(2) : '',
+        tx.finalWeight         != null ? tx.finalWeight.toFixed(2) : '',
         tx.quantityUsed        != null ? tx.quantityUsed.toFixed(2) : '',
         tx.lab ?? '',
         new Date(tx.timeTaken).toISOString(),

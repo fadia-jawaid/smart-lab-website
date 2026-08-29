@@ -123,6 +123,8 @@ export interface LabIncharge {
 export interface Transaction {
   id: string;
 
+  initialWeight?: number;
+  finalWeight?: number | null;
   quantityUsed?: number;
   purpose?: string;
 

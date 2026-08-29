@@ -54,8 +54,15 @@ router.post('/', verifyDeviceKey, validate(eventSchema), async (req: Request, re
 
   await db.student.update({ where: { id: student.id }, data: { lastRfidScan: new Date() } });
 
-  if (event === 'taken') {
-    // Find default lab incharge (first active one) for MQTT-originated events
+  const openTx = await db.transaction.findFirst({
+    where: { studentId: student.id, bottleId: bottle.id, status: { in: ['ACTIVE', 'OVERDUE'] } },
+    orderBy: { timeTaken: 'desc' },
+  });
+
+  // Same RFID + open checkout: treat a second "taken" as RETURN so TAKE/RETURN stay one transaction.
+  const isReturn = event === 'returned' || (event === 'taken' && !!openTx);
+
+  if (event === 'taken' && !openTx) {
     const defaultIncharge = await db.labIncharge.findFirst({ where: { isActive: true } });
     if (!defaultIncharge) return fail(res, 500, 'No active lab incharge found to assign transaction');
 
@@ -65,6 +72,9 @@ router.post('/', verifyDeviceKey, validate(eventSchema), async (req: Request, re
         bottleId:      bottle.id,
         labInchargeId: defaultIncharge.id,
         initialWeight: weight,
+        finalWeight:   null,
+        quantityUsed:  null,
+        timeReturned:  null,
         status:        'ACTIVE',
       },
       include: {
@@ -78,11 +88,7 @@ router.post('/', verifyDeviceKey, validate(eventSchema), async (req: Request, re
     return ok(res, { message: 'Chemical taken recorded', transaction });
   }
 
-  if (event === 'returned') {
-    const openTx = await db.transaction.findFirst({
-      where: { studentId: student.id, bottleId: bottle.id, status: 'ACTIVE' },
-      orderBy: { timeTaken: 'desc' },
-    });
+  if (isReturn) {
     if (!openTx) return fail(res, 400, 'No active transaction found for this student and bottle');
 
     const quantityUsed = Math.max(0, openTx.initialWeight - weight);

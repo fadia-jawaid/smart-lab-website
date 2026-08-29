@@ -430,7 +430,7 @@ async function handleReturnEvent(data: ESP32EventPayload): Promise<void> {
 
   // Update bottle current quantity
   const updatedBottle = await db.bottle.update({
-    where: { id: openTransaction.bottleId },
+   where: { id: openTransaction.bottleId! },
     data:  { currentQty: { decrement: quantityUsed } },
   });
 
