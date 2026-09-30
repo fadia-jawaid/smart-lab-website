@@ -1,95 +1,249 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { FlaskConical, Radio, Bell, ScanLine } from 'lucide-react';
-import StatCard from '../ui/StatCard';
-import { Card } from '../ui/Card';
-import { Button } from '../ui/Button';
+import {
+  FlaskConical,
+  Boxes,
+  AlertTriangle,
+  Bell,
+  Printer,
+  Activity,
+  RefreshCw,
+} from 'lucide-react';
 import { useSocket } from '../../hooks/useSocket';
+import StatCard from '../ui/StatCard';
+import { Button } from '../ui/Button';
+import { Skeleton } from '../ui/Skeleton';
 import api from '../../services/api';
 import { staggerContainer } from '../../lib/motion';
-import type { Transaction } from '../../types';
+import DashboardHeader from './DashboardHeader';
+import SystemStatusCard from './SystemStatusCard';
+import ChemicalMonitoring from './ChemicalMonitoring';
+import LabAnalytics from './LabAnalytics';
+import RecentActivityTable from './RecentActivityTable';
+import AlertsPanel from './AlertsPanel';
+import LabReportModal from '../reports/LabReportModal';
+
+interface LabDashboardStats {
+  totalChemicals: number;
+  availableBottles: number;
+  lowStock: number;
+  todayUsage: number;
+  activeAlerts: number;
+  totalRefills: number;
+}
 
 export default function LabDashboard() {
-  const [active, setActive] = useState<Transaction[]>([]);
-  const [count, setCount] = useState({ out: 0, today: 0, alerts: 0 });
+  const [stats, setStats] = useState<LabDashboardStats>({
+    totalChemicals: 0,
+    availableBottles: 0,
+    lowStock: 0,
+    todayUsage: 0,
+    activeAlerts: 0,
+    totalRefills: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [reportOpen, setReportOpen] = useState(false);
   const { on } = useSocket();
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const res = await api.get('/scan/active');
-        setActive(res.data.data);
-        setCount((prev) => ({ ...prev, out: res.data.data.length }));
-      } catch (error) {
-        console.error(error);
+  const fetchDashboardData = useCallback(async () => {
+    try {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      const [invRes, todayLogsRes, alertCountRes, restockRes] = await Promise.allSettled([
+        api.get('/inventory'),
+        api.get('/logs', { params: { from: startOfToday.toISOString(), limit: 200, lab: 'LAB_A' } }),
+        api.get('/alerts/count'),
+        api.get('/restock-logs/summary'),
+      ]);
+
+      let totalChemicals = 0;
+      let availableBottles = 0;
+      let lowStock = 0;
+
+      if (invRes.status === 'fulfilled') {
+        const bottles = invRes.value.data.data || [];
+        totalChemicals = new Set(bottles.map((b: { chemicalName: string }) => b.chemicalName)).size;
+        availableBottles = bottles.filter((b: { isActive?: boolean; currentQty: number }) => b.isActive !== false && b.currentQty > 0).length;
+        lowStock = bottles.filter(
+          (b: { currentQty: number; initialQty: number; lowStockPct?: number }) =>
+            b.initialQty > 0 && (b.currentQty / b.initialQty) * 100 <= (b.lowStockPct ?? 20),
+        ).length;
       }
+
+      const todayUsage = todayLogsRes.status === 'fulfilled' ? (todayLogsRes.value.data.meta?.total ?? todayLogsRes.value.data.data.length ?? 0) : 0;
+      const activeAlerts = alertCountRes.status === 'fulfilled' ? (alertCountRes.value.data.data?.count ?? 0) : 0;
+      const totalRefills = restockRes.status === 'fulfilled' ? (restockRes.value.data.data?.totalRefills ?? 0) : 0;
+
+      setStats({
+        totalChemicals,
+        availableBottles,
+        lowStock,
+        todayUsage,
+        activeAlerts,
+        totalRefills,
+      });
+    } catch (err) {
+      console.error('LabDashboard: failed to load stats', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDashboardData();
+
+    const unsubEvent = on('new_event', fetchDashboardData);
+    const unsubAlert = on('alert_triggered', fetchDashboardData);
+    const unsubInventory = on('inventory_update', fetchDashboardData);
+    const unsubRestock = on('restock_logged', fetchDashboardData);
+
+    return () => {
+      unsubEvent();
+      unsubAlert();
+      unsubInventory();
+      unsubRestock();
     };
-    fetch();
-    const unsub = on('new_event', fetch);
-    return unsub;
-  }, [on]);
+  }, [on, fetchDashboardData]);
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="flex items-center gap-3.5">
+          <Skeleton className="h-12 w-12 rounded-2xl" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-56" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="rounded-2xl border border-hairline bg-surface/70 p-5">
+              <Skeleton className="h-3 w-24" />
+              <div className="mt-3 flex items-center justify-between">
+                <Skeleton className="h-8 w-14" />
+                <Skeleton className="h-10 w-10 rounded-xl" />
+              </div>
+              <Skeleton className="mt-3 h-3 w-32" />
+            </div>
+          ))}
+        </div>
+
+        <Skeleton className="h-40 w-full rounded-2xl" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      <div className="relative">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-28 left-1/4 -z-10 h-72 w-[36rem] rounded-full bg-brand-gradient opacity-[0.10] blur-3xl"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-16 right-1/4 -z-10 h-56 w-[28rem] rounded-full bg-accent-500 opacity-[0.07] blur-3xl"
+        />
+
+        <DashboardHeader subtitle="Live bench tracking, chemical dispensing, and container restock operations in Lab A.">
+          <Button
+            variant="primary"
+            onClick={() => setReportOpen(true)}
+            className="flex items-center gap-2"
+          >
+            <Printer size={16} />
+            <span>Generate Lab Report</span>
+          </Button>
+        </DashboardHeader>
+      </div>
+
+      {/* Summary cards — each one links to its page */}
       <motion.div
         variants={staggerContainer}
         initial="initial"
         animate="enter"
-        className="grid grid-cols-1 gap-4 md:grid-cols-3"
+        className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3"
       >
-        <StatCard label="Bottles Out Now" value={count.out} icon={<FlaskConical size={20} />} accent="brand" />
-        <StatCard label="Today's Scans" value={count.today} icon={<Radio size={20} />} accent="cyan" />
-        <StatCard label="Open Alerts" value={count.alerts} icon={<Bell size={20} />} accent="danger" />
+        {/* Card 1: Total Chemicals */}
+        <StatCard
+          label="Total Chemicals"
+          to="/inventory"
+          value={stats.totalChemicals}
+          icon={<FlaskConical size={20} />}
+          accent="brand"
+          subtext="Tracked reagents"
+        />
+
+        {/* Card 2: Available Bottles */}
+        <StatCard
+          label="Available Bottles"
+          to="/inventory"
+          value={stats.availableBottles}
+          icon={<Boxes size={20} />}
+          accent="cyan"
+          subtext="Active bench stations"
+        />
+
+        {/* Card 3: Low Stock Chemicals */}
+        <StatCard
+          label="Low Stock"
+          to="/inventory"
+          value={stats.lowStock}
+          icon={<AlertTriangle size={20} />}
+          accent={stats.lowStock > 0 ? 'warning' : 'success'}
+          subtext={stats.lowStock > 0 ? 'Refill required' : 'Stock levels optimal'}
+        />
+
+        {/* Card 4: Today's Usage */}
+        <StatCard
+          label="Today's Usage"
+          to="/logs"
+          value={stats.todayUsage}
+          icon={<Activity size={20} />}
+          accent="brand"
+          subtext="Sessions recorded today"
+        />
+
+        {/* Card 5: Active Alerts */}
+        <StatCard
+          label="Active Alerts"
+          to="/alerts"
+          value={stats.activeAlerts}
+          icon={<Bell size={20} />}
+          accent={stats.activeAlerts > 0 ? 'danger' : 'success'}
+          subtext={stats.activeAlerts > 0 ? 'Action required' : 'No safety alarms'}
+        />
+
+        {/* Card 6: Total Refills */}
+        <StatCard
+          label="Total Refills"
+          to="/inventory?tab=refills"
+          value={stats.totalRefills}
+          icon={<RefreshCw size={20} />}
+          accent="success"
+          subtext="Restock operations"
+        />
       </motion.div>
 
-      {/* Quick scan CTA */}
-      <Card interactive className="relative overflow-hidden p-6">
-        <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent-500/20 blur-2xl" />
-        <div className="relative flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="font-display text-lg font-semibold text-slate-100">Ready to scan</h2>
-            <p className="mt-1 text-sm text-slate-400">
-              Start a new RFID scan session to check chemicals in or out.
-            </p>
-          </div>
-          <Link to="/scan">
-            <Button size="lg" className="gap-2">
-              <ScanLine size={18} /> Start Scan Session
-            </Button>
-          </Link>
-        </div>
-      </Card>
+      {/* Hardware / network health — compact strip below the KPIs */}
+      <SystemStatusCard />
 
-      <Card className="p-6">
-        <h2 className="mb-4 font-display font-semibold text-slate-100">
-          Currently Out ({active.length})
-        </h2>
-        {active.length === 0 ? (
-          <p className="py-6 text-center text-sm text-slate-500">
-            No chemicals currently checked out
-          </p>
-        ) : (
-          <div className="divide-y divide-hairline">
-            {active.map((tx) => (
-              <div key={tx.id} className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-100">
-                    {tx.student?.name}{' '}
-                    <span className="text-slate-500">({tx.student?.rollNo})</span>
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    {tx.bottle?.chemicalName} — {tx.bottle?.unit}
-                  </p>
-                </div>
-                <p className="tnum text-xs text-slate-400">
-                  {new Date(tx.timeTaken).toLocaleTimeString()}
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+      {/* Live chemical containers */}
+      <ChemicalMonitoring />
+
+      {/* Analytics get the full width so the chart has room to breathe */}
+      <LabAnalytics />
+
+      {/* Active alerts */}
+      <AlertsPanel />
+
+      {/* Recent activity */}
+      <RecentActivityTable />
+
+      {/* Report Modal */}
+      <LabReportModal isOpen={reportOpen} onClose={() => setReportOpen(false)} />
     </div>
   );
 }

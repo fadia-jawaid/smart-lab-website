@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Search, UserPlus, Eye, EyeOff } from 'lucide-react';
+import { Search, UserPlus, Eye, EyeOff, Copy, Check, UserX } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { Card }    from '../components/ui/Card';
 import { Button }  from '../components/ui/Button';
 import { Badge }   from '../components/ui/Badge';
 import { Modal }   from '../components/ui/Modal';
 import { Input }   from '../components/ui/Input';
 import { Spinner } from '../components/ui/Spinner';
+import StudentDetailModal from '../components/students/StudentDetailModal';
 import api         from '../services/api';
+import { useAuth } from '../hooks/useAuth';
 import type { Student }    from '../types';
 import type { AxiosError } from 'axios';
 
@@ -18,6 +20,14 @@ export default function StudentsPage() {
   const [showAdd,   setShowAdd]   = useState(false);
   const [rfidModal, setRfidModal] = useState<Student | null>(null);
   const [rfidInput, setRfidInput] = useState('');
+  const [newCreds,  setNewCreds]  = useState<{ name: string; password: string } | null>(null);
+  const [copied,    setCopied]    = useState(false);
+  const [detailId,  setDetailId]  = useState<string | null>(null);
+  // Deactivate — same pattern as InchargesPage.tsx. The backend endpoint
+  // (DELETE /api/students/:id) already existed; there was just no button
+  // anywhere in this page to actually call it.
+  const [deactivateTarget, setDeactivateTarget] = useState<Student | null>(null);
+  const [deactivating,     setDeactivating]     = useState(false);
   const [form, setForm] = useState({
     name: '', rollNo: '', email: '',
     batch: '', department: '', phone: '',
@@ -28,7 +38,7 @@ export default function StudentsPage() {
   const [revealLoading,     setRevealLoading]     = useState<Record<string, boolean>>({});
   const [visiblePasswords,  setVisiblePasswords]  = useState<Record<string, boolean>>({});
 
-  const navigate = useNavigate();
+  const { isAdmin } = useAuth();
 
   const fetchStudents = async () => {
     try {
@@ -54,14 +64,32 @@ export default function StudentsPage() {
       const res = await api.post('/students', form);
       setShowAdd(false);
       setForm({ name: '', rollNo: '', email: '', batch: '', department: '', phone: '' });
-      // Show the default password returned from the server
+      // Show the default password in a proper modal (copyable, doesn't
+      // block the page like a native alert()) instead of a jarring
+      // browser popup.
       if (res.data.data?.defaultPassword) {
-        alert(`Student created!\nDefault password: ${res.data.data.defaultPassword}\nPlease share this with the student.`);
+        setNewCreds({ name: form.name, password: res.data.data.defaultPassword });
       }
       void fetchStudents();
     } catch (err) {
       const error = err as AxiosError<{ error?: string }>;
-      alert(error.response?.data?.error || 'Failed');
+      toast.error(error.response?.data?.error || 'Failed to add student');
+    }
+  };
+
+  const handleDeactivate = async () => {
+    if (!deactivateTarget) return;
+    setDeactivating(true);
+    try {
+      await api.delete(`/students/${deactivateTarget.id}`);
+      toast.success(`${deactivateTarget.name} deactivated`);
+      setDeactivateTarget(null);
+      void fetchStudents();
+    } catch (err) {
+      const error = err as AxiosError<{ error?: string }>;
+      toast.error(error.response?.data?.error || 'Failed to deactivate student');
+    } finally {
+      setDeactivating(false);
     }
   };
 
@@ -71,11 +99,20 @@ export default function StudentsPage() {
       await api.patch(`/students/${rfidModal.id}/rfid`, { rfidTag: rfidInput });
       setRfidModal(null);
       setRfidInput('');
+      toast.success('RFID card assigned');
       void fetchStudents();
     } catch (err) {
       const error = err as AxiosError<{ error?: string }>;
-      alert(error.response?.data?.error || 'Failed');
+      toast.error(error.response?.data?.error || 'Failed to assign RFID');
     }
+  };
+
+  const handleCopyPassword = () => {
+    if (!newCreds) return;
+    navigator.clipboard.writeText(newCreds.password).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   const handleRevealPassword = async (student: Student) => {
@@ -92,7 +129,7 @@ export default function StudentsPage() {
       setRevealedPasswords(prev => ({ ...prev, [student.id]: pwd }));
       setVisiblePasswords(prev => ({ ...prev, [student.id]: true }));
     } catch {
-      alert('Failed to retrieve password');
+      toast.error('Failed to retrieve password');
     } finally {
       setRevealLoading(prev => ({ ...prev, [student.id]: false }));
     }
@@ -224,9 +261,11 @@ export default function StudentsPage() {
                   {/* Actions */}
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
-                      <Button size="sm" variant="ghost" onClick={() => navigate(`/students/${s.id}`)}>
-                        View
-                      </Button>
+                      {isAdmin && (
+                        <Button size="sm" variant="ghost" onClick={() => setDetailId(s.id)}>
+                          View
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="secondary"
@@ -234,6 +273,11 @@ export default function StudentsPage() {
                       >
                         RFID
                       </Button>
+                      {isAdmin && s.isActive && (
+                        <Button size="sm" variant="danger" onClick={() => setDeactivateTarget(s)}>
+                          Deactivate
+                        </Button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -284,6 +328,57 @@ export default function StudentsPage() {
             <Button onClick={handleAssignRfid}>Assign Card</Button>
           </div>
         </div>
+      </Modal>
+
+      {/* New Student Credentials Modal */}
+      <Modal isOpen={!!newCreds} onClose={() => setNewCreds(null)} title="Student Created" size="sm">
+        {newCreds && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-400">
+              Share this default password with <span className="font-medium text-slate-200">{newCreds.name}</span>.
+              They can change it after logging in.
+            </p>
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-hairline bg-surface-2/60 px-4 py-3">
+              <span className="font-mono text-sm text-slate-100">{newCreds.password}</span>
+              <button
+                onClick={handleCopyPassword}
+                className="flex items-center gap-1.5 rounded-lg border border-hairline px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200"
+              >
+                {copied ? <><Check size={13} className="text-success" /> Copied</> : <><Copy size={13} /> Copy</>}
+              </button>
+            </div>
+            <div className="flex justify-end pt-2">
+              <Button onClick={() => setNewCreds(null)}>Done</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Student Detail Modal — replaces the old separate /students/:id route */}
+      <StudentDetailModal studentId={detailId} onClose={() => setDetailId(null)} />
+
+      {/* Deactivate Confirmation Modal */}
+      <Modal isOpen={!!deactivateTarget} onClose={() => setDeactivateTarget(null)} title="Deactivate Student" size="sm">
+        {deactivateTarget && (
+          <div className="space-y-5">
+            <div className="flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-danger/15 text-danger">
+                <UserX size={18} />
+              </span>
+              <p className="text-sm text-slate-300">
+                Deactivate <span className="font-medium text-slate-100">{deactivateTarget.name}</span> ({deactivateTarget.rollNo})?
+                They will no longer be able to log in or scan chemicals. Their past transaction history is kept, and
+                their RFID card is freed up to assign to someone else.
+              </p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button variant="secondary" onClick={() => setDeactivateTarget(null)}>Cancel</Button>
+              <Button onClick={handleDeactivate} loading={deactivating} className="!bg-danger hover:!bg-danger/90">
+                Deactivate
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

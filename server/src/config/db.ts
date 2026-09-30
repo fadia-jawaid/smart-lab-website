@@ -17,7 +17,7 @@ if (process.env.NODE_ENV !== 'production') {
 export async function connectDB(): Promise<void> {
   try {
     await db.$connect();
-    console.log('✅  PostgreSQL connected via Prisma');
+    console.log('✅  Database connected (SQLite via Prisma)');
   } catch (err) {
     console.error('❌  Database connection failed:', err);
     process.exit(1);
@@ -26,5 +26,5 @@ export async function connectDB(): Promise<void> {
 
 export async function disconnectDB(): Promise<void> {
   await db.$disconnect();
-  console.log('PostgreSQL disconnected');
+  console.log('Database disconnected');
 }

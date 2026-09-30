@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
-import { KeyRound, CheckCircle2, User, Mail, Building2, Phone, BadgeCheck, Calendar } from 'lucide-react';
+import {
+  KeyRound, CheckCircle2, User, Mail, Building2, Phone, BadgeCheck, Calendar, AlertTriangle,
+} from 'lucide-react';
+import toast from 'react-hot-toast';
 import { Card }    from '../components/ui/Card';
 import { Badge }   from '../components/ui/Badge';
 import { Button }  from '../components/ui/Button';
@@ -9,7 +12,21 @@ import { useAuth } from '../hooks/useAuth';
 import axios       from 'axios';
 import api         from '../services/api';
 
+type StudentProfile = {
+  kind:          'STUDENT';
+  name:          string;
+  rollNo:        string;
+  email?:        string;
+  batch:         string;
+  department:    string;
+  phone?:        string;
+  rfidTag?:      string | null;
+  lastRfidScan?: string | null;
+  _count?:       { transactions?: number };
+};
+
 type StaffProfile = {
+  kind:        'ADMIN' | 'LAB_INCHARGE';
   id:          string;
   name:        string;
   email:       string;
@@ -23,12 +40,22 @@ type StaffProfile = {
   _count?:     { transactions?: number };
 };
 
-export default function StaffProfilePage() {
-  useAuth();
-  const [profile, setProfile] = useState<StaffProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+type Profile = StudentProfile | StaffProfile;
 
-  // Change password
+type Row = { label: string; value: React.ReactNode; icon?: React.ReactNode; isRfid?: boolean };
+
+// One Profile page for all three roles instead of two near-identical
+// pages (MyProfilePage for students, StaffProfilePage for admin/incharge).
+// The only real difference between them was which endpoint to call and
+// which fields apply to that role — the avatar card, details list, and
+// change-password flow were otherwise the same UI, just duplicated.
+export default function ProfilePage() {
+  const { isStudent } = useAuth();
+
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+
   const [showPwdForm, setShowPwdForm] = useState(false);
   const [currentPwd,  setCurrentPwd]  = useState('');
   const [newPwd,      setNewPwd]      = useState('');
@@ -38,12 +65,16 @@ export default function StaffProfilePage() {
   const [pwdSuccess,  setPwdSuccess]  = useState(false);
 
   useEffect(() => {
+    const endpoint = isStudent ? '/my/profile' : '/my/staff-profile';
     api
-      .get('/my/staff-profile')
-      .then((res) => setProfile(res.data.data))
-      .catch(() => {})
+      .get(endpoint)
+      .then((res) => setProfile({ ...res.data.data, kind: isStudent ? 'STUDENT' : res.data.data.role }))
+      .catch(() => {
+        setLoadError(true);
+        if (!isStudent) toast.error('Could not load your profile');
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [isStudent]);
 
   const handleChangePassword = async () => {
     setPwdError('');
@@ -68,7 +99,9 @@ export default function StaffProfilePage() {
 
     setPwdLoading(true);
     try {
-      await api.patch('/my/staff-change-password', {
+      // Students and staff hash/verify passwords in separate tables, so
+      // this is the one place the merge still needs a role branch.
+      await api.patch(isStudent ? '/my/change-password' : '/my/staff-change-password', {
         currentPassword: currentPwd,
         newPassword:     newPwd,
       });
@@ -91,63 +124,100 @@ export default function StaffProfilePage() {
     }
   };
 
-  if (loading)
+  if (loading) {
     return (
       <div className="flex justify-center py-20">
         <Spinner size="lg" />
       </div>
     );
+  }
 
-  if (!profile) return null;
+  if (!profile) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-20 text-center">
+        <AlertTriangle size={24} className="text-danger" />
+        <p className="text-sm text-slate-400">
+          {loadError ? 'Could not load your profile. Please refresh the page.' : 'Profile not found.'}
+        </p>
+      </div>
+    );
+  }
 
-  const isAdmin      = profile.role === 'ADMIN';
-  const isIncharge   = profile.role === 'LAB_INCHARGE';
+  const isAdmin = !isStudent && (profile as StaffProfile).role === 'ADMIN';
+  const isIncharge = !isStudent && (profile as StaffProfile).role === 'LAB_INCHARGE';
 
-  const rows = [
-    { label: 'Full Name',   value: profile.name,       icon: <User size={14} /> },
-    { label: 'Email',       value: profile.email,      icon: <Mail size={14} /> },
-    ...(isIncharge && profile.employeeId
-      ? [{ label: 'Employee ID', value: profile.employeeId, icon: <BadgeCheck size={14} /> }]
-      : []),
-    ...(isIncharge && profile.department
-      ? [{ label: 'Department', value: profile.department, icon: <Building2 size={14} /> }]
-      : []),
-    ...(isIncharge && profile.phone
-      ? [{ label: 'Phone', value: profile.phone, icon: <Phone size={14} /> }]
-      : []),
-    {
-      label: 'Last Login',
-      value: profile.lastLogin ? new Date(profile.lastLogin).toLocaleString() : 'Never',
-      icon: <Calendar size={14} />,
-    },
-    {
-      label: 'Member Since',
-      value: new Date(profile.createdAt).toLocaleDateString(),
-      icon: <Calendar size={14} />,
-    },
-    ...(isIncharge && profile._count
-      ? [{ label: 'Scans Processed', value: profile._count.transactions ?? 0, icon: <BadgeCheck size={14} /> }]
-      : []),
-  ];
+  const rows: Row[] = isStudent
+    ? (() => {
+        const p = profile as StudentProfile;
+        return [
+          { label: 'Full Name',   value: p.name },
+          { label: 'Roll Number', value: p.rollNo },
+          { label: 'Email',       value: p.email ?? '—' },
+          { label: 'Batch',       value: p.batch },
+          { label: 'Department',  value: p.department },
+          { label: 'Phone',       value: p.phone ?? '—' },
+          { label: 'RFID Card',   value: p.rfidTag ?? null, isRfid: true },
+          { label: 'Total Uses',  value: p._count?.transactions ?? 0 },
+          {
+            label: 'Last Visit',
+            value: p.lastRfidScan ? new Date(p.lastRfidScan).toLocaleString() : 'Never',
+          },
+        ];
+      })()
+    : (() => {
+        const p = profile as StaffProfile;
+        return [
+          { label: 'Full Name', value: p.name,  icon: <User size={14} /> },
+          { label: 'Email',     value: p.email, icon: <Mail size={14} /> },
+          ...(isIncharge && p.employeeId
+            ? [{ label: 'Employee ID', value: p.employeeId, icon: <BadgeCheck size={14} /> }]
+            : []),
+          ...(isIncharge && p.department
+            ? [{ label: 'Department', value: p.department, icon: <Building2 size={14} /> }]
+            : []),
+          ...(isIncharge && p.phone
+            ? [{ label: 'Phone', value: p.phone, icon: <Phone size={14} /> }]
+            : []),
+          {
+            label: 'Last Login',
+            value: p.lastLogin ? new Date(p.lastLogin).toLocaleString() : 'Never',
+            icon: <Calendar size={14} />,
+          },
+          {
+            label: 'Member Since',
+            value: new Date(p.createdAt).toLocaleDateString(),
+            icon: <Calendar size={14} />,
+          },
+          ...(isIncharge && p._count
+            ? [{ label: 'Scans Processed', value: p._count.transactions ?? 0, icon: <BadgeCheck size={14} /> }]
+            : []),
+        ];
+      })();
+
+  const initials = profile.name?.[0]?.toUpperCase();
+  const subtitle = isStudent
+    ? `${(profile as StudentProfile).rollNo} · ${(profile as StudentProfile).department}`
+    : (profile as StaffProfile).email;
 
   return (
     <div className="mx-auto max-w-lg space-y-4">
-
       {/* Avatar card */}
       <Card className="relative overflow-hidden p-8 text-center">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-brand-500/10 blur-2xl" />
         <div className="relative">
           <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-brand-gradient text-3xl font-bold text-white shadow-glow">
-            {profile.name?.[0]?.toUpperCase()}
+            {initials}
           </div>
           <h2 className="font-display text-xl font-bold text-slate-50">{profile.name}</h2>
-          <p className="mt-1 text-sm text-slate-400">{profile.email}</p>
-          <div className="mt-3 flex justify-center">
-            <Badge
-              label={isAdmin ? 'Administrator' : 'Lab Incharge'}
-              severity={isAdmin ? 'DANGER' : 'SUCCESS'}
-            />
-          </div>
+          <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+          {!isStudent && (
+            <div className="mt-3 flex justify-center">
+              <Badge
+                label={isAdmin ? 'Administrator' : 'Lab Incharge'}
+                severity={isAdmin ? 'DANGER' : 'SUCCESS'}
+              />
+            </div>
+          )}
         </div>
       </Card>
 
@@ -157,27 +227,34 @@ export default function StaffProfilePage() {
           {rows.map((row) => (
             <div key={row.label} className="flex items-center justify-between px-6 py-3">
               <div className="flex items-center gap-2 text-slate-400">
-                <span className="text-slate-600">{row.icon}</span>
+                {row.icon && <span className="text-slate-600">{row.icon}</span>}
                 <span className="text-sm">{row.label}</span>
               </div>
-              <span className="text-sm font-medium text-slate-100">{row.value}</span>
+              {row.isRfid ? (
+                row.value
+                  ? <Badge label={row.value as string} severity="SUCCESS" />
+                  : <Badge label="Not Assigned" severity="INFO" />
+              ) : (
+                <span className="text-sm font-medium text-slate-100">{row.value}</span>
+              )}
             </div>
           ))}
 
-          {/* Status row */}
-          <div className="flex items-center justify-between px-6 py-3">
-            <span className="text-sm text-slate-400">Account Status</span>
-            <Badge
-              label={profile.isActive ? 'Active' : 'Inactive'}
-              severity={profile.isActive ? 'SUCCESS' : 'INFO'}
-            />
-          </div>
+          {!isStudent && (
+            <div className="flex items-center justify-between px-6 py-3">
+              <span className="text-sm text-slate-400">Account Status</span>
+              <Badge
+                label={(profile as StaffProfile).isActive ? 'Active' : 'Inactive'}
+                severity={(profile as StaffProfile).isActive ? 'SUCCESS' : 'INFO'}
+              />
+            </div>
+          )}
         </div>
       </Card>
 
       {/* Change Password */}
       <Card className="p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <KeyRound size={18} className="text-accent-400" />
             <h3 className="font-semibold text-slate-100">Change Password</h3>
@@ -236,7 +313,7 @@ export default function StaffProfilePage() {
               </div>
             )}
 
-            <div className="flex gap-3 justify-end pt-2">
+            <div className="flex justify-end gap-3 pt-2">
               <Button
                 variant="secondary"
                 onClick={() => {

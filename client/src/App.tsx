@@ -1,22 +1,33 @@
+import { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { Spinner } from './components/ui/Spinner';
 
+// Login and the Dashboard are the two things almost every visit needs
+// immediately, so they load eagerly. Everything past that is lazy — a
+// student who only ever opens Logs shouldn't have to download the
+// Inventory, Alerts, Students and Settings code on their very first paint.
 import LoginPage         from './pages/LoginPage';
 import DashboardPage     from './pages/DashboardPage';
-import InventoryPage     from './pages/InventoryPage';
-import BottleDetailPage  from './pages/BottleDetailPage';
-import LogsPage          from './pages/LogsPage';
-import AlertsPage        from './pages/AlertsPage';
-import StudentsPage      from './pages/StudentsPage';
-import StudentDetailPage from './pages/StudentDetailPage';
-import InchargesPage     from './pages/InchargesPage';
-import ScanSessionPage   from './pages/ScanSessionPage';
-import MyHistoryPage     from './pages/MyHistoryPage';
-import MyProfilePage     from './pages/MyProfilePage';
-import SettingsPage      from './pages/SettingsPage';
-import StaffProfilePage  from './pages/StaffProfilePage';
 import PageShell         from './components/layout/PageShell';
+
+const InventoryPage    = lazy(() => import('./pages/InventoryPage'));
+const BottleDetailPage = lazy(() => import('./pages/BottleDetailPage'));
+const LogsPage         = lazy(() => import('./pages/LogsPage'));
+const AlertsPage       = lazy(() => import('./pages/AlertsPage'));
+const StudentsPage     = lazy(() => import('./pages/StudentsPage'));
+const InchargesPage    = lazy(() => import('./pages/InchargesPage'));
+const ProfilePage      = lazy(() => import('./pages/ProfilePage'));
+const SettingsPage     = lazy(() => import('./pages/SettingsPage'));
+const NotFoundPage     = lazy(() => import('./pages/NotFoundPage'));
+
+function RouteFallback() {
+  return (
+    <div className="flex justify-center py-24">
+      <Spinner size="lg" />
+    </div>
+  );
+}
 
 function ProtectedRoute({
   children,
@@ -69,7 +80,9 @@ export default function App() {
         element={
           <ProtectedRoute>
             <PageShell>
-              <Outlet />
+              <Suspense fallback={<RouteFallback />}>
+                <Outlet />
+              </Suspense>
             </PageShell>
           </ProtectedRoute>
         }
@@ -95,7 +108,7 @@ export default function App() {
         <Route
           path="logs"
           element={
-            <ProtectedRoute roles={['ADMIN', 'LAB_INCHARGE']}>
+            <ProtectedRoute roles={['ADMIN', 'LAB_INCHARGE', 'STUDENT']}>
               <LogsPage />
             </ProtectedRoute>
           }
@@ -117,14 +130,6 @@ export default function App() {
           }
         />
         <Route
-          path="students/:id"
-          element={
-            <ProtectedRoute roles={['ADMIN']}>
-              <StudentDetailPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="incharges"
           element={
             <ProtectedRoute roles={['ADMIN']}>
@@ -133,26 +138,10 @@ export default function App() {
           }
         />
         <Route
-          path="scan"
+          path="profile"
           element={
-            <ProtectedRoute roles={['ADMIN', 'LAB_INCHARGE']}>
-              <ScanSessionPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="my-history"
-          element={
-            <ProtectedRoute roles={['STUDENT']}>
-              <MyHistoryPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="my-profile"
-          element={
-            <ProtectedRoute roles={['STUDENT']}>
-              <MyProfilePage />
+            <ProtectedRoute roles={['ADMIN', 'LAB_INCHARGE', 'STUDENT']}>
+              <ProfilePage />
             </ProtectedRoute>
           }
         />
@@ -164,20 +153,20 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
-        {/* ✅ my-account is NOW inside PageShell — sidebar will show */}
-        <Route
-          path="my-account"
-          element={
-            <ProtectedRoute roles={['ADMIN', 'LAB_INCHARGE']}>
-              <StaffProfilePage />
-            </ProtectedRoute>
-          }
-        />
       </Route>
 
-      {/* Catch all */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      {/* Catch all — a real 404 instead of a silent redirect, so an
+          unknown/removed URL says so instead of pretending nothing
+          happened. Public (no auth gate) since a logged-out visitor
+          hitting a bad link deserves the same clear answer. */}
+      <Route
+        path="*"
+        element={
+          <Suspense fallback={<RouteFallback />}>
+            <NotFoundPage />
+          </Suspense>
+        }
+      />
     </Routes>
   );
 }

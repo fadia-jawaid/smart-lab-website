@@ -1,21 +1,15 @@
 version: '3.8'
 
-services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB:       smart_lab
-      POSTGRES_USER:     lab_user
-      POSTGRES_PASSWORD: Lab@1234
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lab_user -d smart_lab"]
-      interval: 10s
-      retries: 5
+# NOTE: the Prisma schema (server/prisma/schema.prisma) uses SQLite, not
+# Postgres — this file previously started a Postgres container and pointed
+# DATABASE_URL at it, which Prisma rejects outright (the schema's
+# `provider = "sqlite"` doesn't match a "postgresql://" connection string,
+# so the server container would fail on startup, before even reaching the
+# password-with-"@" URL-parsing problem the old POSTGRES_PASSWORD had).
+# This now matches what the app actually uses: a SQLite file, persisted in
+# a named volume so it survives a container restart.
 
+services:
   mqtt:
     image: eclipse-mosquitto:2
     ports:
@@ -32,12 +26,12 @@ services:
       - "5000:5000"
     env_file: ./server/.env
     environment:
-      DATABASE_URL: postgresql://lab_user:Lab@1234@db:5432/smart_lab
+      DATABASE_URL: file:/data/dev.db
       MQTT_BROKER:  mqtt://mqtt:1883
       CLIENT_URL:   http://localhost
+    volumes:
+      - sqlite_data:/data
     depends_on:
-      db:
-        condition: service_healthy
       mqtt:
         condition: service_started
 
@@ -47,3 +41,8 @@ services:
       - "80:80"
     depends_on:
       - server
+
+volumes:
+  sqlite_data:
+  mosquitto_data:
+  mosquitto_logs:

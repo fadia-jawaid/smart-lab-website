@@ -22,9 +22,9 @@ router.get('/', authenticate, requireLabIncharge, async (req, res) => {
 
     if (search) {
       where.OR = [
-        { name:   { contains: search as string, mode: 'insensitive' } },
-        { rollNo: { contains: search as string, mode: 'insensitive' } },
-        { email:  { contains: search as string, mode: 'insensitive' } },
+        { name:   { contains: search as string } },
+        { rollNo: { contains: search as string } },
+        { email:  { contains: search as string } },
       ];
     }
 
@@ -75,7 +75,7 @@ router.get('/:id', authenticate, requireLabIncharge, async (req, res) => {
 });
 
 // GET /api/students/:id/history
-router.get('/:id/history', authenticate, requireAdmin, async (req, res) => {
+router.get('/:id/history', authenticate, requireLabIncharge, async (req, res) => {
   try {
     const transactions = await db.transaction.findMany({
       where:   { studentId: normalizeId(req.params.id) },
@@ -201,13 +201,27 @@ router.post('/:id/verify-password', authenticate, requireLabIncharge, async (req
 });
 
 // DELETE /api/students/:id
+// rfidTag is @unique (and optional) on Student — a plain isActive:false
+// soft delete leaves a deactivated student still holding their card's UID,
+// so that same physical card can never be assigned to a new/different
+// student afterwards (Prisma P2002). Free it on deactivation, the same way
+// inventory.ts frees a deleted bottle's rfidTag.
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+  const studentId = normalizeId(req.params.id);
   try {
+    const existing = await db.student.findUnique({ where: { id: studentId } });
+    if (!existing) return fail(res, 404, 'Student not found');
+
     await db.student.update({
-      where: { id: normalizeId(req.params.id) },
-      data:  { isActive: false },
+      where: { id: studentId },
+      data: {
+        isActive: false,
+        rfidTag: existing.rfidTag && !existing.rfidTag.includes('__DELETED__')
+          ? `${existing.rfidTag}__DELETED__${Date.now()}`
+          : existing.rfidTag,
+      },
     });
-    return ok(res, { message: 'Student deactivated successfully' });
+    return ok(res, { message: 'Student deactivated successfully. Their RFID card is now free to reassign.' });
   } catch (err: any) {
     if (err.code === 'P2025') return fail(res, 404, 'Student not found');
     return fail(res, 500, 'Failed to deactivate student');

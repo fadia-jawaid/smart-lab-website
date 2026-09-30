@@ -2,26 +2,44 @@ import { Router } from 'express';
 import { db }                                              from '../config/db';
 import { authenticate, requireLabIncharge }                from '../middleware/auth';
 import { ok, fail }                                        from '../utils/response';
+import { emitEvent, SOCKET_EVENTS }                        from '../services/socketService';
 
 const router = Router();
 
 // GET /api/alerts
 router.get('/', authenticate, requireLabIncharge, async (req, res) => {
   try {
-    const { isResolved, type, severity } = req.query;
+    const { isResolved, type, severity, skip, limit } = req.query;
 
     const where: any = {};
     if (isResolved !== undefined) where.isResolved = isResolved === 'true';
     if (type)     where.type     = type     as string;
     if (severity) where.severity = severity as string;
 
-    const alerts = await db.alert.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take:    200,
-    });
+    // Previously this always returned only the 200 newest matching alerts
+    // with no way to page further — but /alerts/count (the badge number)
+    // counts ALL unresolved alerts with no cap. Whenever there were more
+    // than 200 open alerts, the badge and the visible list disagreed, and
+    // anything past the 200 most recent could never be seen or resolved
+    // from the UI at all — it just sat open in the database forever.
+    // `skip`/`limit` let the client page through the rest.
+    const take = Math.min(Number(limit) || 200, 500);
+    const skipCount = Math.max(Number(skip) || 0, 0);
 
-    return ok(res, alerts);
+    const [alerts, total] = await Promise.all([
+      db.alert.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: skipCount,
+        take,
+        include: {
+          bottle: { select: { chemicalName: true } },
+        },
+      }),
+      db.alert.count({ where }),
+    ]);
+
+    return ok(res, alerts, { total, skip: skipCount, limit: take, hasMore: skipCount + alerts.length < total });
   } catch {
     return fail(res, 500, 'Failed to fetch alerts');
   }
@@ -58,7 +76,12 @@ router.patch('/:id/resolve', authenticate, requireLabIncharge, async (req, res) 
     const alert = await db.alert.update({
       where: { id: alertId },
       data,
+      include: { bottle: { select: { chemicalName: true } } },
     });
+
+    // Without this, other connected tabs/dashboards only found out an alert
+    // was resolved on their next page load/poll, not in real time.
+    emitEvent(SOCKET_EVENTS.ALERT_RESOLVED, alert);
 
     return ok(res, alert);
   } catch (err: any) {

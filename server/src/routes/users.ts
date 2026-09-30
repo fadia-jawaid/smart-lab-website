@@ -1,10 +1,3 @@
-/**
- * routes/users.ts
- * Alias route — re-exports the students router so the route index
- * can mount both /api/users and /api/students pointing to the same logic.
- * The students-specific routes live in routes/students.ts (already coded
- * in the v2 plan). This file provides backward-compatible /api/users access.
- */
 import { Router, Request, Response } from 'express';
 import { db } from '../config/db';
 import { authenticate, requireAdmin } from '../middleware/auth';

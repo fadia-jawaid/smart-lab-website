@@ -18,10 +18,23 @@ const eventSchema = z.object({
   apiKey:     z.string().optional(),
 });
 
-/** Middleware: validate ESP32 API key */
+/**
+ * Middleware: validate ESP32 API key.
+ * Mirrors deviceValidate.ts's checkDeviceKey: when ESP32_API_KEY is left
+ * blank in .env (the documented default for local/FYP testing), no key is
+ * required at all. Previously this always demanded an exact match against
+ * an empty string, which no device request would ever satisfy, so every
+ * /api/events call failed with 401 until a key was configured.
+ */
 function verifyDeviceKey(req: Request, res: Response, next: Function): void {
+  const configured = (env as any).ESP32_API_KEY as string | undefined;
+  if (!configured) {
+    next();
+    return;
+  }
+
   const key = req.headers['x-device-key'] ?? req.body?.apiKey;
-  if (!key || key !== (env as any).ESP32_API_KEY) {
+  if (!key || key !== configured) {
     res.status(401).json({ success: false, error: 'Invalid device API key' });
     return;
   }
@@ -40,7 +53,7 @@ router.post('/', verifyDeviceKey, validate(eventSchema), async (req: Request, re
   if (!student || !student.isActive) {
     const alert = await db.alert.create({
       data: {
-        type:     'UNAUTHORIZED_ACCESS',
+        type:     'UNKNOWN_TAG',
         severity: 'DANGER',
         message:  `Unknown or inactive RFID card: ${rfidUser}`,
       },
@@ -106,9 +119,18 @@ router.post('/', verifyDeviceKey, validate(eventSchema), async (req: Request, re
         labIncharge: { select: { id: true, name: true } },
       },
     });
+    // Clamp so currentQty can never go below zero — matches the same
+    // safety clamp already used in scan.ts's /complete route. Re-fetch
+    // right before decrementing so the clamp uses the freshest known
+    // quantity, not a possibly-stale read from earlier in the request.
+    const bottleBeforeDecrement = await db.bottle.findUnique({ where: { id: bottle.id } });
+    const safeQuantityUsed = bottleBeforeDecrement
+      ? Math.min(quantityUsed, bottleBeforeDecrement.currentQty)
+      : quantityUsed;
+
     const updatedBottle = await db.bottle.update({
       where: { id: bottle.id },
-      data:  { currentQty: { decrement: quantityUsed } },
+      data:  { currentQty: { decrement: safeQuantityUsed } },
     });
     await checkAlerts(updatedBottle, transaction);
     emitEvent(SOCKET_EVENTS.NEW_EVENT, transaction);

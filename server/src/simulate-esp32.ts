@@ -23,10 +23,10 @@ async function runSimulator() {
       lab: 'LAB_A',
     };
 
-    console.log('📡 [MQTT] Publishing "taken" event for Ethanol bottle (1450.0 ml)...');
+    console.log('📡 [MQTT] Publishing "taken" event for Ethanol bottle (58.0 g)...');
     client.publish('lab/events', JSON.stringify(takenPayload), { qos: 1 });
 
-    // Wait 3 seconds then publish "Returned" event with 1410.0 ml (40 ml used)
+    // Wait 3 seconds then publish "Returned" event with 52.0 g (6 g used)
     setTimeout(() => {
       const returnedPayload = {
         event: 'returned',
@@ -36,7 +36,7 @@ async function runSimulator() {
         lab: 'LAB_A',
       };
 
-      console.log('📡 [MQTT] Publishing "returned" event for Ethanol bottle (1410.0 ml, used: 40.0 ml)...');
+      console.log('📡 [MQTT] Publishing "returned" event for Ethanol bottle (52.0 g, used: 6.0 g)...');
       client.publish('lab/events', JSON.stringify(returnedPayload), { qos: 1 });
 
       // Wait another 2 seconds then simulate LAB B student attendance scan

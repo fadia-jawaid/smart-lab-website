@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { ArrowLeft, History } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { RadialGauge } from '../components/ui/RadialGauge';
 import { Badge } from '../components/ui/Badge';
 import { Spinner } from '../components/ui/Spinner';
+import { staggerContainer, fadeUpItem } from '../lib/motion';
+import { LAB_LABELS, LAB_BADGE_SEVERITY } from '../lib/lab';
 import api from '../services/api';
 import {
   AreaChart,
@@ -19,10 +22,13 @@ import {
 type Transaction = {
   id: string;
   timeTaken: string;
+  timeReturned?: string | null;
   quantityUsed: number | null;
   purpose?: string;
   status: string;
+  lab?: 'LAB_A' | 'LAB_B' | null;
   student?: { name: string; rollNo: string };
+  labIncharge?: { name: string } | null;
 };
 
 type Bottle = {
@@ -69,7 +75,10 @@ export default function BottleDetailPage() {
         qty: tx.quantityUsed ?? 0,
       })) ?? [];
 
-  const pct = (bottle.currentQty / bottle.initialQty) * 100;
+  // Guard against initialQty being 0 (or missing) — dividing by it produces
+  // NaN, which breaks comparisons below (pct > 50 is always false, so the
+  // badge silently reads "Low") and corrupts the RadialGauge's SVG arc math.
+  const pct = bottle.initialQty > 0 ? (bottle.currentQty / bottle.initialQty) * 100 : 0;
   const low = bottle.lowStockPct ?? 20;
   const avg = bottle.transactions.length
     ? bottle.transactions.reduce((s, t) => s + (t.quantityUsed ?? 0), 0) / bottle.transactions.length
@@ -92,9 +101,9 @@ export default function BottleDetailPage() {
           </p>
         </div>
         <Badge
-          label={pct > 50 ? 'Full' : pct > low ? 'Medium' : 'Low'}
-          severity={pct > 50 ? 'SUCCESS' : pct > low ? 'WARNING' : 'DANGER'}
-          pulse={pct <= low}
+          label={bottle.currentQty <= 0 ? 'Empty' : pct > 50 ? 'Full' : pct > low ? 'Medium' : 'Low'}
+          severity={bottle.currentQty <= 0 ? 'DANGER' : pct > 50 ? 'SUCCESS' : pct > low ? 'WARNING' : 'DANGER'}
+          pulse={bottle.currentQty <= 0 || pct <= low}
         />
       </div>
 
@@ -152,46 +161,85 @@ export default function BottleDetailPage() {
 
       {/* Table */}
       <Card>
-        <div className="border-b border-hairline px-6 py-4">
-          <h2 className="font-display font-semibold text-slate-100">Usage History</h2>
+        <div className="flex items-center justify-between border-b border-hairline px-6 py-4">
+          <h2 className="flex items-center gap-2 font-display font-semibold text-slate-100">
+            <History size={17} className="text-accent-400" /> Usage History
+          </h2>
+          {bottle.transactions.length > 0 && (
+            <span className="text-xs text-slate-500">
+              {bottle.transactions.length} record{bottle.transactions.length === 1 ? '' : 's'}
+            </span>
+          )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-surface-2/40">
-              <tr>
-                {['Student', 'Roll No', 'Quantity', 'Purpose', 'Date', 'Status'].map((h) => (
-                  <th
-                    key={h}
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-hairline">
-              {bottle.transactions.map((tx) => (
-                <tr key={tx.id} className="transition-colors hover:bg-white/5">
-                  <td className="px-4 py-3 text-slate-100">{tx.student?.name}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-400">{tx.student?.rollNo}</td>
-                  <td className="px-4 py-3 tnum text-slate-200">
-                    {tx.quantityUsed ? `${tx.quantityUsed.toFixed(1)} ${bottle.unit}` : '—'}
-                  </td>
-                  <td className="px-4 py-3 text-slate-400">{tx.purpose ?? '—'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">
-                    {new Date(tx.timeTaken).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge
-                      label={tx.status}
-                      severity={tx.status === 'RETURNED' ? 'SUCCESS' : tx.status === 'OVERDUE' ? 'DANGER' : 'INFO'}
-                    />
-                  </td>
+        {bottle.transactions.length === 0 ? (
+          <p className="py-12 text-center text-sm text-slate-500">
+            No usage recorded yet for this chemical.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-2/40">
+                <tr>
+                  {['User', 'Roll No', 'Lab', 'Quantity', 'Purpose', 'Taken', 'Returned', 'Status'].map((h) => (
+                    <th
+                      key={h}
+                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <motion.tbody
+                variants={staggerContainer}
+                initial="initial"
+                animate="enter"
+                className="divide-y divide-hairline"
+              >
+                {bottle.transactions.map((tx) => (
+                  <motion.tr key={tx.id} variants={fadeUpItem} className="transition-colors hover:bg-white/5">
+                    <td className="px-4 py-3 font-medium text-slate-100">
+                      {tx.student?.name ?? (
+                        <span className="inline-flex items-center gap-1.5">
+                          {tx.labIncharge?.name ?? 'Unknown'}
+                          <span className="rounded-full bg-brand-500/15 px-1.5 py-0.5 text-[10px] font-medium text-brand-300">
+                            Incharge
+                          </span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-400">
+                      {tx.student?.rollNo ?? <span className="italic text-slate-600">Self</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {tx.lab ? (
+                        <Badge label={LAB_LABELS[tx.lab]} severity={LAB_BADGE_SEVERITY[tx.lab]} />
+                      ) : (
+                        <span className="text-xs text-slate-600">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 tnum text-slate-200">
+                      {tx.quantityUsed != null ? `${tx.quantityUsed.toFixed(1)} ${bottle.unit}` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">{tx.purpose ?? '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400">
+                      {new Date(tx.timeTaken).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-400">
+                      {tx.timeReturned ? new Date(tx.timeReturned).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge
+                        label={tx.status}
+                        severity={tx.status === 'RETURNED' ? 'SUCCESS' : tx.status === 'OVERDUE' ? 'DANGER' : 'INFO'}
+                      />
+                    </td>
+                  </motion.tr>
+                ))}
+              </motion.tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
   );

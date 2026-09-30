@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldCheck, ScanLine, GraduationCap, FlaskConical,
-  Mail, IdCard, Lock, X, HelpCircle, ArrowLeft, CheckCircle2,
+  Mail, IdCard, Lock, X, HelpCircle, ArrowLeft, CheckCircle2, ChevronDown,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
@@ -43,6 +43,13 @@ export default function LoginPage() {
   const [forgotConfirm, setForgotConfirm] = useState('');
   const [forgotMsg,     setForgotMsg]     = useState('');
   const [forgotMasked,  setForgotMasked]  = useState('');
+
+  // Demo credentials — collapsed by default. A real login screen showing
+  // admin/incharge passwords in plain sight on load reads as an unfinished
+  // demo rather than a real product; tucking it behind a toggle keeps the
+  // convenience for evaluators/testers without it being the first thing
+  // anyone sees.
+  const [showDemoCreds, setShowDemoCreds] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
   const [forgotError,   setForgotError]   = useState('');
 
@@ -62,9 +69,12 @@ export default function LoginPage() {
         role:   selectedRole,
       });
       login(res.data.data.token, res.data.data.user);
-      if (selectedRole === 'STUDENT')           navigate('/my-history');
-      else if (selectedRole === 'LAB_INCHARGE') navigate('/scan');
-      else                                       navigate('/');
+      // Everyone lands on their role's dashboard at "/" — DashboardPage
+      // picks AdminDashboard / LabDashboard / StudentDashboard based on
+      // the logged-in role. Students used to be sent straight to /logs,
+      // skipping the StudentDashboard entirely (Total Uses, RFID card
+      // link status, Last Visit cards).
+      navigate('/');
     } catch (err: unknown) {
       let message = 'Login failed. Check your credentials.';
       if (typeof err === 'object' && err !== null) {
@@ -121,6 +131,8 @@ export default function LoginPage() {
       await api.post('/password-reset/verify-code', {
         code:     forgotCode.trim(),
         userType: forgotRole,
+        email:    forgotEmail || undefined,
+        rollNo:   forgotRole === 'STUDENT' ? forgotRollNo || undefined : undefined,
       });
       setForgotStep('reset');
     } catch (err: unknown) {
@@ -154,6 +166,8 @@ export default function LoginPage() {
         code:        forgotCode.trim(),
         userType:    forgotRole,
         newPassword: forgotPwd,
+        email:       forgotEmail || undefined,
+        rollNo:      forgotRole === 'STUDENT' ? forgotRollNo || undefined : undefined,
       });
       setForgotStep('done');
     } catch (err: unknown) {
@@ -208,15 +222,27 @@ export default function LoginPage() {
       >
         {/* Header */}
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-gradient shadow-glow">
-            <FlaskConical size={26} className="text-white" />
+          {/* Logo ring with glow */}
+          <div className="relative mx-auto mb-4 h-16 w-16">
+            <div className="absolute inset-0 rounded-2xl bg-brand-gradient opacity-30 blur-lg" />
+            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-gradient shadow-glow">
+              <FlaskConical size={28} className="text-white" />
+            </div>
           </div>
-          <h1 className="font-display text-2xl font-bold text-slate-50">SmartLab</h1>
-          <p className="mt-1 text-sm text-slate-400">Chemical Management System</p>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50">SmartLab</h1>
+          <p className="mt-0.5 text-sm text-slate-400">Smart Laboratory Management &amp; Chemical Tracking</p>
+          {/* FYP university branding */}
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <span className="rounded-full border border-brand-500/40 bg-brand-500/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-brand-400">
+              Final Year Project
+            </span>
+            <span className="text-[10px] text-slate-600">·</span>
+            <span className="text-[10px] text-slate-500">Dept. of Information Technology</span>
+          </div>
         </div>
 
         {/* Portal selection */}
-        <p className="mb-3 text-sm font-medium text-slate-300">Select your portal</p>
+        <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">Select your portal</p>
         <div className="mb-6 grid grid-cols-3 gap-2">
           {portals.map((p) => {
             const Icon   = p.icon;
@@ -227,14 +253,26 @@ export default function LoginPage() {
                 type="button"
                 onClick={() => { setSelectedRole(p.role); setError(''); }}
                 className={cn(
-                  'relative flex flex-col items-center rounded-2xl border p-3 text-center transition-all',
+                  'group relative flex flex-col items-center rounded-2xl border p-3 pt-4 text-center transition-all duration-200',
                   active
                     ? 'border-brand-500/60 bg-brand-500/10 shadow-glow'
-                    : 'border-hairline bg-surface-2/40 hover:border-slate-600',
+                    : 'border-hairline bg-surface-2/40 hover:border-slate-600 hover:bg-surface-2/70',
                 )}
               >
-                <Icon size={22} className={active ? 'text-accent-400' : 'text-slate-400'} />
-                <span className="mt-1.5 text-xs font-medium text-slate-200">{p.label}</span>
+                {/* Active dot */}
+                {active && (
+                  <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-accent-400 shadow shadow-accent-400/60" />
+                )}
+                {/* Gradient icon circle */}
+                <div className={cn(
+                  'mb-2 flex h-9 w-9 items-center justify-center rounded-xl transition-all',
+                  active
+                    ? 'bg-brand-gradient shadow-glow'
+                    : 'bg-surface-2/80 group-hover:bg-surface-2',
+                )}>
+                  <Icon size={18} className={active ? 'text-white' : 'text-slate-400'} />
+                </div>
+                <span className="text-xs font-semibold text-slate-200">{p.label}</span>
                 <span className="mt-0.5 text-[10px] text-slate-500">{p.desc}</span>
               </button>
             );
@@ -316,12 +354,33 @@ export default function LoginPage() {
           </Button>
         </form>
 
-        {/* Demo credentials */}
-        <div className="mt-5 rounded-xl border border-hairline bg-surface-2/40 p-3 text-xs text-slate-400">
-          <p className="mb-1 font-medium text-slate-300">Demo accounts</p>
-          <p>Admin: admin@smartlab.com / admin123</p>
-          <p>Incharge: incharge@smartlab.com / incharge123</p>
-          <p>Student: 21-CS-45 / student123</p>
+        {/* Demo credentials — collapsed behind a toggle instead of shown
+            by default (see showDemoCreds above). */}
+        <div className="mt-5">
+          <button
+            type="button"
+            onClick={() => setShowDemoCreds((v) => !v)}
+            className="flex w-full items-center justify-between rounded-xl border border-hairline bg-surface-2/40 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:text-slate-200"
+          >
+            <span>Demo accounts</span>
+            <ChevronDown size={14} className={cn('transition-transform', showDemoCreds && 'rotate-180')} />
+          </button>
+          <AnimatePresence initial={false}>
+            {showDemoCreds && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-2 rounded-xl border border-hairline bg-surface-2/40 p-3 text-xs text-slate-400">
+                  <p>Admin: admin@smartlab.com / admin123</p>
+                  <p>Incharge: incharge@smartlab.com / incharge123</p>
+                  <p>Student: 21-CS-45 / student123</p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.div>
 

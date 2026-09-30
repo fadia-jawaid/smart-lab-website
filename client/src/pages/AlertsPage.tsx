@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Ban, TrendingDown, Clock, Droplets, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import {
+  Ban, TrendingDown, TrendingUp, Clock, Droplets, AlertTriangle, CheckCircle2, Weight,
+  PackageX, ShieldAlert, CreditCard, HelpCircle, KeyRound, PackagePlus,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useSocket } from '../hooks/useSocket';
 import { useAuth } from '../hooks/useAuth';
 import { Card } from '../components/ui/Card';
@@ -19,15 +23,45 @@ type Alert = {
   message: string;
   createdAt: string;
   isResolved: boolean;
+  bottle?: { chemicalName: string } | null;
 };
 
 const typeIcon: Record<string, LucideIcon> = {
-  UNAUTHORIZED_ACCESS: Ban,
   LOW_STOCK: TrendingDown,
-  NOT_RETURNED: Clock,
+  CRITICAL_STOCK: TrendingDown,
+  EMPTY_STOCK: PackageX,
+  OVERFILL: TrendingUp,
+  OVERLOAD: Weight,
+  EXCESSIVE_USAGE: Droplets,
   LEAKAGE: Droplets,
-  ANOMALY: AlertTriangle,
+  UNAUTHORIZED_USAGE: Ban,
+  UNTRACKED_USAGE: AlertTriangle,
+  UNTRACKED_REFILL: PackagePlus,
+  WRONG_RFID: CreditCard,
+  UNKNOWN_TAG: HelpCircle,
+  UNAUTHORIZED_REFILL: KeyRound,
+  NOT_RETURNED: Clock,
 };
+
+// Fallback for anyone still viewing an old, pre-rename alert row that's
+// sitting in the database from before this alert-type cleanup.
+const legacyTypeIcon: Record<string, LucideIcon> = {
+  UNAUTHORIZED_ACCESS: Ban,
+  ANOMALY: AlertTriangle,
+  OVERWEIGHT: Weight,
+};
+
+const getTypeIcon = (type: string): LucideIcon =>
+  typeIcon[type] ?? legacyTypeIcon[type] ?? ShieldAlert;
+
+// "UNAUTHORIZED_USAGE" → "Unauthorized Usage" — the raw enum name read
+// fine as a developer, but shouty ALL_CAPS reads as a bug/placeholder to
+// anyone else glancing at the alert feed.
+const formatTypeLabel = (type: string): string =>
+  type
+    .split('_')
+    .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+    .join(' ');
 
 const mapSeverity = (s: string): 'SUCCESS' | 'DANGER' | 'INFO' | 'WARNING' => {
   switch (s) {
@@ -45,64 +79,119 @@ const mapSeverity = (s: string): 'SUCCESS' | 'DANGER' | 'INFO' | 'WARNING' => {
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [filter, setFilter] = useState<'ALL' | 'UNRESOLVED' | 'RESOLVED'>('UNRESOLVED');
 
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
   const { on } = useSocket();
 
+  const filterParam =
+    filter === 'ALL' ? '' : filter === 'UNRESOLVED' ? 'isResolved=false' : 'isResolved=true';
+
   useEffect(() => {
     const loadAlerts = async () => {
       setLoading(true);
       try {
-        const params =
-          filter === 'ALL' ? '' : filter === 'UNRESOLVED' ? '?isResolved=false' : '?isResolved=true';
-        const res = await api.get(`/alerts${params}`);
+        const query = filterParam ? `?${filterParam}` : '';
+        const res = await api.get(`/alerts${query}`);
         setAlerts(res.data.data);
+        setHasMore(Boolean(res.data.meta?.hasMore));
       } catch (err) {
         console.error('Failed to load alerts:', err);
+        toast.error('Failed to load alerts');
       } finally {
         setLoading(false);
       }
     };
     loadAlerts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
+  // Previously the alerts list always showed only the 200 newest matching
+  // alerts with no way to reach anything older — this fetches the next
+  // page and appends it, so an alert that's been open for a while (e.g.
+  // from before a fix was deployed) can still be found and resolved
+  // instead of being permanently stuck off-screen.
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const sep = filterParam ? '&' : '?';
+      const res = await api.get(`/alerts${filterParam ? `?${filterParam}` : ''}${sep}skip=${alerts.length}`);
+      setAlerts((prev) => [...prev, ...res.data.data]);
+      setHasMore(Boolean(res.data.meta?.hasMore));
+    } catch (err) {
+      console.error('Failed to load more alerts:', err);
+      toast.error('Failed to load more alerts');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
-    const unsub = on('alert_triggered', (alert: Alert) => {
-      setAlerts((prev) => [alert, ...prev]);
+    const unsubTriggered = on('alert_triggered', (alert: Alert) => {
+      setAlerts((prev) => {
+        // Guard against the same alert arriving twice (e.g. a duplicate
+        // socket emit, or it was already in the initial fetch) — without
+        // this, React sees two elements with the same `key` and warns,
+        // and Framer Motion's enter/exit animation glitches on it.
+        if (prev.some((a) => a.id === alert.id)) return prev;
+        // A freshly triggered alert is unresolved by definition. If the
+        // current tab is showing only RESOLVED alerts, don't inject it —
+        // it doesn't belong in that filtered list.
+        if (filter === 'RESOLVED') return prev;
+        return [alert, ...prev];
+      });
     });
-    return unsub;
-  }, [on]);
 
-          const handleResolve = async (id: string) => {
-            try {
-              await api.patch(`/alerts/${id}/resolve`);
-              setAlerts((prev) =>
-                filter === 'UNRESOLVED'
-                  ? prev.filter((a) => a.id !== id)
-                  : prev.map((a) => (a.id === id ? { ...a, isResolved: true } : a)),
-              );
-            } catch (err: unknown) {
-              let message = 'Failed to resolve alert';
+    const unsubResolved = on('alert_resolved', (alert: Alert) => {
+      setAlerts((prev) => {
+        if (filter === 'UNRESOLVED') {
+          // Resolved elsewhere (another tab/user) — it no longer belongs
+          // in the unresolved list.
+          return prev.filter((a) => a.id !== alert.id);
+        }
+        // ALL / RESOLVED views: just reflect the new resolved state instead
+        // of removing it, so counts/context stay accurate.
+        return prev.map((a) => (a.id === alert.id ? { ...a, isResolved: true } : a));
+      });
+    });
 
-              if (err instanceof Error) {
-                message = err.message;
-              } else if (
-                typeof err === 'object' &&
-                err !== null &&
-                'response' in err &&
-                typeof (err as Record<string, unknown>).response === 'object' &&
-                (err as Record<string, unknown>).response !== null
-              ) {
-                const response = (err as { response?: { data?: { error?: string } } }).response;
-                message = response?.data?.error ?? message;
-              }
+    return () => {
+      unsubTriggered();
+      unsubResolved();
+    };
+  }, [on, filter]);
 
-              alert(message);
-              console.error('Failed to resolve alert:', err);
-            }
-          };
+  const handleResolve = async (id: string) => {
+    try {
+      await api.patch(`/alerts/${id}/resolve`);
+      setAlerts((prev) =>
+        filter === 'UNRESOLVED'
+          ? prev.filter((a) => a.id !== id)
+          : prev.map((a) => (a.id === id ? { ...a, isResolved: true } : a)),
+      );
+    } catch (err: unknown) {
+      let message = 'Failed to resolve alert';
+
+      if (err instanceof Error) {
+        message = err.message;
+      } else if (
+        typeof err === 'object' &&
+        err !== null &&
+        'response' in err &&
+        typeof (err as Record<string, unknown>).response === 'object' &&
+        (err as Record<string, unknown>).response !== null
+      ) {
+        const response = (err as { response?: { data?: { error?: string } } }).response;
+        message = response?.data?.error ?? message;
+      }
+
+      toast.error(message);
+      console.error('Failed to resolve alert:', err);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -137,7 +226,7 @@ export default function AlertsPage() {
         <div className="space-y-3">
           <AnimatePresence initial={false}>
             {alerts.map((alert) => {
-              const Icon = typeIcon[alert.type] ?? AlertTriangle;
+              const Icon = getTypeIcon(alert.type);
               return (
                 <motion.div
                   key={alert.id}
@@ -163,10 +252,13 @@ export default function AlertsPage() {
                           <Icon size={18} />
                         </span>
                         <div>
-                          <div className="mb-1 flex items-center gap-2">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
                             <Badge label={alert.severity} severity={mapSeverity(alert.severity)} />
+                            {alert.bottle?.chemicalName && (
+                              <Badge label={alert.bottle.chemicalName} severity="INFO" />
+                            )}
                             <span className="text-xs text-slate-500">
-                              {alert.type.replace(/_/g, ' ')}
+                              {formatTypeLabel(alert.type)}
                             </span>
                           </div>
                           <p className="text-sm text-slate-200">{alert.message}</p>
@@ -190,6 +282,14 @@ export default function AlertsPage() {
               );
             })}
           </AnimatePresence>
+
+          {hasMore && (
+            <div className="flex justify-center pt-2">
+              <Button variant="ghost" size="sm" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? <Spinner size="sm" /> : 'Load more alerts'}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>

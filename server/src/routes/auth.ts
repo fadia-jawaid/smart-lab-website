@@ -13,8 +13,6 @@ const router = Router();
 // role must be: 'ADMIN' | 'LAB_INCHARGE' | 'STUDENT'
 
 router.post('/login', authLimiter, async (req, res) => {
-  console.log('LOGIN REQUEST:', req.body);
-
   const { email, rollNo, password, role } = req.body;
 
   // Basic input validation
@@ -64,13 +62,9 @@ router.post('/login', authLimiter, async (req, res) => {
     }
 
     // ── User not found ────────────────────────────────────────────
-    console.log('USER FOUND:', user);
-
-// ── User not found ────────────────────────────────────────────
-if (!user) {
-  console.log('User not found');
-  return fail(res, 401, 'Invalid credentials');
-}
+    if (!user) {
+      return fail(res, 401, 'Invalid credentials');
+    }
 
     // ── Account deactivated ───────────────────────────────────────
     if (!user.isActive) {
@@ -78,10 +72,7 @@ if (!user) {
     }
 
     // ── Password check ────────────────────────────────────────────
-    // const passwordValid = await verifyPassword(password, user.password);
-const passwordValid = await verifyPassword(password, user.password);
-
-console.log('PASSWORD VALID:', passwordValid);
+    const passwordValid = await verifyPassword(password, user.password);
 
     if (!passwordValid) {
       return fail(res, 401, 'Invalid credentials');

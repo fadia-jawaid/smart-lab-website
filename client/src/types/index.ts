@@ -1,89 +1,3 @@
-// export type UserRole = 'ADMIN' | 'LAB_INCHARGE' | 'STUDENT';
-
-// /* ===================== STUDENT ===================== */
-// export interface Student {
-//   id: string;
-//   name: string;
-//   rollNo: string;
-//   email?: string;
-//   batch: string;
-//   department: string;
-//   phone?: string;
-//   rfidTag?: string;
-//   isActive: boolean;
-//   lastRfidScan?: string;
-
-//   _count?: {
-//     transactions: number;
-//   };
-// }
-
-// /* ===================== LAB INCHARGE (NEW) ===================== */
-// export interface LabIncharge {
-//   id: string;
-//   name: string;
-//   email: string;
-//   employeeId?: string;
-//   department?: string;
-//   phone?: string;
-//   isActive: boolean;
-
-//   _count?: {
-//     transactions: number;
-//   };
-// }
-
-// /* ===================== TRANSACTION ===================== */
-// export interface Transaction {
-//   id: string;
-
-//   quantityUsed?: number;
-//   purpose?: string;
-
-//   timeTaken: string;
-//   timeReturned?: string | null;
-
-//   status: 'ACTIVE' | 'RETURNED' | 'OVERDUE';
-
-//   bottle?: {
-//     id?: string;
-//     chemicalName: string;
-//     unit: string;
-//   };
-
-//   student?: {
-//     id?: string;
-//     name: string;
-//     rollNo?: string;
-//   };
-
-//   labIncharge?: {
-//     id?: string;
-//     name?: string;
-//   };
-// }
-
-// /* ===================== ALERT (NEW FIX) ===================== */
-// export interface Alert {
-//   id: string;
-
-//   type:
-//     | 'UNAUTHORIZED_ACCESS'
-//     | 'LOW_STOCK'
-//     | 'NOT_RETURNED'
-//     | 'LEAKAGE'
-//     | 'ANOMALY';
-
-//   severity: 'INFO' | 'WARNING' | 'DANGER';
-
-//   message: string;
-
-//   createdAt: string;
-
-//   isResolved: boolean;
-// }
-
-//new updated code 
 export type UserRole = 'ADMIN' | 'LAB_INCHARGE' | 'STUDENT';
 
 /* ===================== STUDENT ===================== */
@@ -113,6 +27,7 @@ export interface LabIncharge {
   department?: string;
   phone?: string;
   isActive: boolean;
+  rfidTag?: string | null;
 
   _count?: {
     transactions: number;
@@ -145,6 +60,7 @@ export interface Transaction {
     id?: string;
     name: string;
     rollNo?: string;
+    department?: string;
   };
 
   labIncharge?: {
@@ -157,12 +73,25 @@ export interface Transaction {
 export interface Alert {
   id: string;
 
+  // Kept in sync with the AlertType enum in server/prisma/schema.prisma.
+  // The old union (UNAUTHORIZED_ACCESS, ANOMALY, ...) only covered 5 of the
+  // 14 types the backend actually emits, so most real alerts fell outside
+  // the declared type.
   type:
-    | 'UNAUTHORIZED_ACCESS'
     | 'LOW_STOCK'
-    | 'NOT_RETURNED'
+    | 'CRITICAL_STOCK'
+    | 'EMPTY_STOCK'
+    | 'OVERFILL'
+    | 'OVERLOAD'
+    | 'EXCESSIVE_USAGE'
     | 'LEAKAGE'
-    | 'ANOMALY';
+    | 'UNAUTHORIZED_USAGE'
+    | 'UNTRACKED_USAGE'
+    | 'UNTRACKED_REFILL'
+    | 'WRONG_RFID'
+    | 'UNKNOWN_TAG'
+    | 'UNAUTHORIZED_REFILL'
+    | 'NOT_RETURNED';
 
   severity: 'INFO' | 'WARNING' | 'DANGER';
 

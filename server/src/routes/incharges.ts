@@ -15,7 +15,7 @@ router.get('/', authenticate, requireAdmin, async (_req, res) => {
     const incharges = await db.labIncharge.findMany({
       select: {
         id: true, name: true, email: true, employeeId: true,
-        department: true, phone: true, isActive: true,
+        department: true, phone: true, isActive: true, rfidTag: true,
         lastLogin: true, createdAt: true,
         _count: { select: { transactions: true } },
       },
@@ -34,7 +34,7 @@ router.get('/:id', authenticate, requireAdmin, async (req, res) => {
       where: { id: normalizeId(req.params.id) },
       select: {
         id: true, name: true, email: true, employeeId: true,
-        department: true, phone: true, isActive: true,
+        department: true, phone: true, isActive: true, rfidTag: true,
         lastLogin: true, createdAt: true,
         _count: { select: { transactions: true } },
       },
@@ -101,6 +101,30 @@ router.patch('/:id', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// PATCH /api/incharges/:id/rfid
+router.patch('/:id/rfid', authenticate, requireAdmin, async (req, res) => {
+  const { rfidTag } = req.body;
+  if (!rfidTag) return fail(res, 400, 'rfidTag is required');
+
+  try {
+    // Trim + uppercase before saving — the ESP32 firmware normalizes the
+    // scanned tag the same way before looking it up, so a tag saved with
+    // stray whitespace or lowercase letters (e.g. pasted from a card
+    // reader tool, or edited directly in a DB browser) would silently
+    // never match a real scan again, with no visible sign anything was
+    // wrong — the value just looks identical in any admin UI.
+    const incharge = await db.labIncharge.update({
+      where: { id: normalizeId(req.params.id) },
+      data:  { rfidTag: rfidTag.toUpperCase().trim() },
+    });
+    return ok(res, { id: incharge.id, name: incharge.name, rfidTag: incharge.rfidTag });
+  } catch (err: any) {
+    if (err.code === 'P2025') return fail(res, 404, 'Lab Incharge not found');
+    if (err.code === 'P2002') return fail(res, 409, 'This RFID tag is already assigned to another lab incharge');
+    return fail(res, 500, 'Failed to assign RFID');
+  }
+});
+
 // POST /api/incharges/:id/verify-password — Admin only
 // Returns the default password if it has not been changed
 router.post('/:id/verify-password', authenticate, requireAdmin, async (req, res) => {
@@ -124,13 +148,25 @@ router.post('/:id/verify-password', authenticate, requireAdmin, async (req, res)
 });
 
 // DELETE /api/incharges/:id
+// Same rfidTag-freeing fix as students.ts / inventory.ts — LabIncharge.rfidTag
+// is also @unique, so without this a deactivated incharge's card UID stays
+// locked forever and can never be handed to their replacement.
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+  const inchargeId = normalizeId(req.params.id);
   try {
+    const existing = await db.labIncharge.findUnique({ where: { id: inchargeId } });
+    if (!existing) return fail(res, 404, 'Lab Incharge not found');
+
     await db.labIncharge.update({
-      where: { id: normalizeId(req.params.id) },
-      data:  { isActive: false },
+      where: { id: inchargeId },
+      data: {
+        isActive: false,
+        rfidTag: existing.rfidTag && !existing.rfidTag.includes('__DELETED__')
+          ? `${existing.rfidTag}__DELETED__${Date.now()}`
+          : existing.rfidTag,
+      },
     });
-    return ok(res, { message: 'Lab Incharge deactivated' });
+    return ok(res, { message: 'Lab Incharge deactivated. Their RFID card is now free to reassign.' });
   } catch (err: any) {
     if (err.code === 'P2025') return fail(res, 404, 'Lab Incharge not found');
     return fail(res, 500, 'Failed to deactivate lab incharge');

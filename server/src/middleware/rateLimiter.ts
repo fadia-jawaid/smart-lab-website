@@ -14,12 +14,18 @@ export const apiLimiter = rateLimit({
   skip: () => !isProd,
 });
 
-// Tighter limiter for auth endpoints (also off in development for easy testing).
+// Tighter limiter for auth endpoints — also protects password-reset code
+// verification, where a 6-digit code has only 900,000 possible values, so
+// this must stay active even outside production. It used to fully
+// `skip: () => !isProd`, i.e. be completely OFF unless NODE_ENV was
+// exactly "production" — meaning brute-forcing a reset code had zero rate
+// limiting during normal development/demo use. A higher cap in
+// development still leaves room for React StrictMode's double-fetches and
+// manual testing, without leaving the endpoint wide open.
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50,
+  max: isProd ? 50 : 300,
   message: { success: false, error: 'Too many login attempts, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => !isProd,
 });

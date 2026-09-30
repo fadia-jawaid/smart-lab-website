@@ -16,11 +16,20 @@ enum Role {
 }
 
 enum AlertType {
-  UNAUTHORIZED_ACCESS
   LOW_STOCK
-  NOT_RETURNED
+  CRITICAL_STOCK
+  EMPTY_STOCK
+  OVERFILL
+  OVERLOAD
+  EXCESSIVE_USAGE
   LEAKAGE
-  ANOMALY
+  UNAUTHORIZED_USAGE
+  UNTRACKED_USAGE
+  UNTRACKED_REFILL
+  WRONG_RFID
+  UNKNOWN_TAG
+  UNAUTHORIZED_REFILL
+  NOT_RETURNED
 }
 
 enum AlertSeverity {
@@ -57,7 +66,13 @@ model Admin {
 }
 
 // ─── LabIncharge ──────────────────────────────────────────────────────────────
-// Lab staff who physically operate the RFID scanner and manage daily operations
+// Lab staff who physically operate the RFID scanner and manage daily operations.
+//
+// rfidTag lets the ESP32 recognize "this scan is the incharge, not a student"
+// purely from which card was tapped — this is what separates the REFILL flow
+// (incharge-only, absolute weight sync) from the USAGE flow (student-only,
+// delta-based). Without this, any card that increases the scale's weight
+// looked identical to a real refill, which is exactly the bug being fixed.
 
 model LabIncharge {
   id           String   @id @default(cuid())
@@ -67,6 +82,7 @@ model LabIncharge {
   employeeId   String?  @unique
   department   String?
   phone        String?
+  rfidTag      String?  @unique   // RFID card UID assigned to this incharge
   isActive     Boolean  @default(true)
   lastLogin    DateTime?
   createdAt    DateTime @default(now())
@@ -74,8 +90,10 @@ model LabIncharge {
   lab          Lab?
 
   transactions Transaction[]  // transactions they processed
+  restockLogs  RestockLog[]   // refills they personally performed
 
   @@index([email])
+  @@index([rfidTag])
 }
 
 // ─── Student ──────────────────────────────────────────────────────────────────
@@ -112,10 +130,22 @@ model Bottle {
   rfidTag        String   @unique   // RFID tag attached to bottle
   chemicalName   String
   description    String?
-  unit           String   @default("ml")   // ml, g, L, kg
-  initialQty     Float    // original full quantity
+  unit           String   @default("g")   // Standardized to grams (g) system-wide — the load
+                                            // cell hardware only measures weight, so every bottle
+                                            // MUST use "g". Enforced in routes/inventory.ts, which
+                                            // ignores any other value the client sends.
+  initialQty     Float    // NORMAL/rated full-stock reference (e.g. 50g) — used for
+                          // stock %, Low/Critical/Empty Stock, and the Overfill check.
+                          // This is a business/operating reference, not the bottle's
+                          // physical limit — see maxCapacity for that.
+  maxCapacity    Float    @default(92)  // true physical/hardware max the load cell can
+                          // ever legitimately read for this bottle (e.g. 92g). Refills
+                          // are clamped here, and any reading above it raises an
+                          // Overload alert. Distinct from initialQty on purpose: a
+                          // bottle is normally topped up to ~50g even though it could
+                          // physically hold up to 92g.
   currentQty     Float    // current remaining quantity
-  lowStockPct    Int      @default(20)   // alert when below this %
+  lowStockPct    Int      @default(20)   // Low Stock alert threshold (%)
   location       String?  // shelf/cabinet location in lab
   supplier       String?
   isActive       Boolean  @default(true)
@@ -123,6 +153,8 @@ model Bottle {
   updatedAt      DateTime @updatedAt
 
   transactions   Transaction[]
+  restockLogs    RestockLog[]
+  alerts         Alert[]
 
   @@index([rfidTag])
   @@index([isActive])
@@ -133,9 +165,9 @@ model Bottle {
 
 model Transaction {
   id              String            @id @default(cuid())
-  studentId       String
+  studentId       String?           // null when a Lab Incharge personally used the chemical (not a student)
   bottleId        String?           // chemical bottle (null for Lab B attendance logs)
-  labInchargeId   String            // who processed this transaction
+  labInchargeId   String            // who processed this transaction — or who personally used it, if studentId is null
   initialWeight   Float             // weight when taken (from load cell)
   finalWeight     Float?            // weight when returned (from load cell)
   quantityUsed    Float?            // calculated: initialWeight - finalWeight
@@ -148,7 +180,7 @@ model Transaction {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
-  student         Student     @relation(fields: [studentId],     references: [id])
+  student         Student?    @relation(fields: [studentId],     references: [id])
   bottle          Bottle?     @relation(fields: [bottleId],      references: [id])
   labIncharge     LabIncharge @relation(fields: [labInchargeId], references: [id])
 
@@ -174,11 +206,50 @@ model Alert {
   resolvedBy  String?       // Admin id who resolved
   createdAt   DateTime      @default(now())
 
+  // Action-suggestion fields for alerts that offer a one-click fix on the
+  // Inventory card ("Confirm & Apply Refill" / "Update Capacity"). Stored on
+  // the row itself (not just the live socket push) so the button still
+  // shows up correctly after a page refresh, not only while the tab that
+  // received the live event stays open.
+  suggestedQty      Float?   // untracked/blocked refill — load-cell reading to apply if confirmed
+  suggestedCapacity Float?   // refill clamped for exceeding maxCapacity — corrected capacity to apply
+  actualQty         Float?   // the raw load-cell reading behind suggestedCapacity, applied together with it
+
   admin       Admin?        @relation("ResolvedBy", fields: [resolvedBy], references: [id])
+  bottle      Bottle?       @relation(fields: [bottleId], references: [id])
 
   @@index([isResolved])
   @@index([createdAt])
   @@index([type])
+  @@index([bottleId])
+}
+
+// ─── RestockLog ───────────────────────────────────────────────────────────────
+// History of bottle top-ups / refills. Deliberately NOT an Alert — a refill
+// isn't a problem that needs resolving, it's a routine inventory event, so it
+// gets its own audit trail instead of cluttering the Alerts page.
+//
+// Refills are now ALWAYS performed by a Lab Incharge (never a Student) and
+// ALWAYS record an ABSOLUTE reading (newQty = exactly what the load cell
+// measured), not a delta added on top of whatever was already in the
+// database — this makes every refill self-correcting instead of compounding
+// any earlier drift.
+
+model RestockLog {
+  id            String   @id @default(cuid())
+  bottleId      String
+  studentId     String?
+  labInchargeId String?
+  amountAdded   Float
+  previousQty   Float
+  newQty        Float
+  createdAt     DateTime @default(now())
+
+  bottle        Bottle       @relation(fields: [bottleId], references: [id])
+  labIncharge   LabIncharge? @relation(fields: [labInchargeId], references: [id])
+
+  @@index([bottleId])
+  @@index([createdAt])
 }
 
 // ─── Setting ──────────────────────────────────────────────────────────────────

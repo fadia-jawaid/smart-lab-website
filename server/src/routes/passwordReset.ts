@@ -1,19 +1,52 @@
 import { Router }        from 'express';
+import { randomInt }     from 'crypto';
 import { db }            from '../config/db';
 import { ok, fail }      from '../utils/response';
 import { hashPassword }  from '../utils/password';
 import { sendResetCode } from '../config/mailer';
+import { authLimiter }   from '../middleware/rateLimiter';
 
 const router = Router();
 
 function generateCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  // crypto.randomInt is cryptographically secure — Math.random() is not,
+  // and its internal state can in principle be inferred from enough
+  // output, which matters for something as sensitive as a password-reset
+  // code.
+  return randomInt(100000, 1000000).toString();
 }
 
 const VALID_USER_TYPES = ['STUDENT', 'LAB_INCHARGE', 'ADMIN'];
 
+// Resolves an email/rollNo back to the account's stored email, without any
+// side effects — used by verify-code and reset-password to double-check
+// that the code being used actually belongs to the account the caller is
+// claiming to be, not just to code+userType.
+async function resolveAccountEmail(
+  userType: string,
+  email?: string,
+  rollNo?: string,
+): Promise<string | null> {
+  if (userType === 'STUDENT') {
+    const student = rollNo
+      ? await db.student.findUnique({ where: { rollNo: rollNo.trim() } })
+      : email
+        ? await db.student.findUnique({ where: { email: email.toLowerCase().trim() } })
+        : null;
+    return student?.email ?? null;
+  }
+  if (userType === 'LAB_INCHARGE') {
+    if (!email) return null;
+    const incharge = await db.labIncharge.findUnique({ where: { email: email.toLowerCase().trim() } });
+    return incharge?.email ?? null;
+  }
+  if (!email) return null;
+  const admin = await db.admin.findUnique({ where: { email: email.toLowerCase().trim() } });
+  return admin?.email ?? null;
+}
+
 // ── POST /api/password-reset/send-code ────────────────────────────────────────
-router.post('/send-code', async (req, res) => {
+router.post('/send-code', authLimiter, async (req, res) => {
   const { email, rollNo, userType } = req.body;
 
   if (!userType || !VALID_USER_TYPES.includes(userType)) {
@@ -116,11 +149,14 @@ router.post('/send-code', async (req, res) => {
 });
 
 // ── POST /api/password-reset/verify-code ──────────────────────────────────────
-router.post('/verify-code', async (req, res) => {
-  const { code, userType } = req.body;
+router.post('/verify-code', authLimiter, async (req, res) => {
+  const { code, userType, email, rollNo } = req.body;
 
   if (!code || !userType || !VALID_USER_TYPES.includes(userType)) {
     return fail(res, 400, 'code and a valid userType are required');
+  }
+  if (!email && !rollNo) {
+    return fail(res, 400, 'email (or roll number, for students) is required');
   }
 
   try {
@@ -133,7 +169,13 @@ router.post('/verify-code', async (req, res) => {
       },
     });
 
-    if (!reset) {
+    // A code only being valid and unexpired isn't enough — it must also
+    // belong to the account the caller is claiming to reset. Without this,
+    // a single guessed/leaked 6-digit code for a role (900,000 possible
+    // values) could reset ANY account of that role, not just the one it
+    // was actually emailed to.
+    const claimedEmail = await resolveAccountEmail(userType, email, rollNo);
+    if (!reset || !claimedEmail || reset.email.toLowerCase() !== claimedEmail.toLowerCase()) {
       return fail(res, 400, 'Invalid or expired reset code');
     }
 
@@ -144,11 +186,14 @@ router.post('/verify-code', async (req, res) => {
 });
 
 // ── POST /api/password-reset/reset-password ───────────────────────────────────
-router.post('/reset-password', async (req, res) => {
-  const { code, userType, newPassword } = req.body;
+router.post('/reset-password', authLimiter, async (req, res) => {
+  const { code, userType, newPassword, email, rollNo } = req.body;
 
   if (!code || !userType || !newPassword || !VALID_USER_TYPES.includes(userType)) {
     return fail(res, 400, 'code, a valid userType, and newPassword are required');
+  }
+  if (!email && !rollNo) {
+    return fail(res, 400, 'email (or roll number, for students) is required');
   }
 
   if (newPassword.length < 6) {
@@ -165,7 +210,12 @@ router.post('/reset-password', async (req, res) => {
       },
     });
 
-    if (!reset) {
+    // Same account-binding check as verify-code — see the comment there.
+    // This is the step that actually changes a password, so it matters
+    // most here even though verify-code already checked it once; a
+    // determined caller could otherwise skip straight to this endpoint.
+    const claimedEmail = await resolveAccountEmail(userType, email, rollNo);
+    if (!reset || !claimedEmail || reset.email.toLowerCase() !== claimedEmail.toLowerCase()) {
       return fail(res, 400, 'Invalid or expired reset code. Please request a new one.');
     }
 
